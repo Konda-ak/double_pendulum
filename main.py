@@ -1,77 +1,47 @@
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
+"""Запуск симуляции: python main.py [конфиг.json] [--save картинка.png] [--no-show]
 
-from mechanics import config, simulate, energy, check_simple_pendulum
+Примеры:
+    python main.py                          # configs/chaos.json
+    python main.py configs/small.json       # малые колебания
+    python main.py configs/damped.json      # затухание с трением
+    python main.py configs/chaos.json --save figures/chaos.png --no-show
+"""
+import argparse
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from config import load_config
+from integrator import integrate
+from physics import energy_scale, initial_state, make_rhs, total_energy
+from visualization import animate, build_figure
 
 
 def main():
-    # 1. Проверка: предел простого маятника
-    T_meas, T_th = check_simple_pendulum(config)
-    print("Проверка простого маятника:")
-    print(f"  период из симуляции: {T_meas:.6f} с")
-    print(f"  период по формуле:   {T_th:.6f} с")
-    print(f"  разница: {abs(T_meas - T_th) / T_th * 100:.5f} %")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("config", nargs="?", default="configs/chaos.json")
+    ap.add_argument("--save", help="сохранить итоговую картинку (png)")
+    ap.add_argument("--no-show", action="store_true", help="не открывать окно")
+    args = ap.parse_args()
 
-    # 2. Основная симуляция
-    state0 = np.radians([config["theta1"], config["omega1"],
-                         config["theta2"], config["omega2"]])
-    t, states = simulate(state0, config["t_max"], config["dt"], config)
+    cfg = load_config(args.config)
+    f = make_rhs(cfg)                      # правая часть f(y, t) для интегратора
+    t, y = integrate(f, initial_state(cfg), cfg["t_max"], cfg["dt"])
 
-    th1, th2 = states[:, 0], states[:, 2]
-    L1, L2 = config["L1"], config["L2"]
-    x1 = L1 * np.sin(th1)
-    y1 = -L1 * np.cos(th1)
-    x2 = x1 + L2 * np.sin(th2)
-    y2 = y1 - L2 * np.cos(th2)
+    E = total_energy(y, cfg)
+    print(f"Конфиг: {args.config}; dt = {cfg['dt']} с, t_max = {cfg['t_max']} с")
+    print(f"Энергия: E(0) = {E[0]:.4f} Дж, E({cfg['t_max']:g}) = {E[-1]:.4f} Дж")
+    print(f"max|E - E(0)| / E_scale = {np.max(np.abs(E - E[0])) / energy_scale(cfg):.2e}")
 
-    E = np.array([energy(s, config) for s in states])
-    print(f"Максимальное изменение энергии за {config['t_max']:g} с: "
-          f"{np.max(np.abs(E - E[0])):.2e} Дж")
-
-    # 3. Графики: маятник слева, энергия справа
-    fig = plt.figure(figsize=(12, 6))
-    ax = fig.add_subplot(1, 2, 1)
-    ax_e = fig.add_subplot(2, 2, 2)
-    ax_d = fig.add_subplot(2, 2, 4)
-
-    R = L1 + L2 + 0.2
-    ax.set_xlim(-R, R)
-    ax.set_ylim(-R, R)
-    ax.set_aspect("equal")
-    ax.grid(alpha=0.3)
-    ax.set_title("Двойной маятник")
-    line, = ax.plot([], [], "o-", lw=2, color="black", markersize=8)
-    trace, = ax.plot([], [], "-", lw=1, color="tab:red", alpha=0.7)
-    time_text = ax.text(0.02, 0.95, "", transform=ax.transAxes)
-
-    ax_e.plot(t, E)
-    ax_e.set_title("Полная энергия")
-    ax_e.set_ylabel("E, Дж")
-    ax_e.grid(alpha=0.3)
-
-    ax_d.plot(t, E - E[0], color="tab:red")
-    ax_d.set_title("Отклонение энергии от начальной")
-    ax_d.set_xlabel("t, с")
-    ax_d.set_ylabel("ΔE, Дж")
-    ax_d.grid(alpha=0.3)
-
-    trail = 300  # длина следа
-    step = 2     # пропуск кадров
-
-    def update(frame):
-        i = frame * step
-        line.set_data([0, x1[i], x2[i]], [0, y1[i], y2[i]])
-        j = max(0, i - trail)
-        trace.set_data(x2[j:i], y2[j:i])
-        time_text.set_text(f"t = {t[i]:.1f} с")
-        return line, trace, time_text
-
-    ani = FuncAnimation(fig, update, frames=len(t) // step,
-                        interval=config["dt"] * step * 1000, blit=True)
-
-    plt.tight_layout()
-    plt.show()
+    fig, update, n_frames = build_figure(cfg, t, y)
+    fig.suptitle(args.config)
+    if args.save:
+        update(n_frames - 1)
+        fig.savefig(args.save, dpi=110)
+        print("Сохранено:", args.save)
+    if not args.no_show:
+        ani = animate(fig, update, n_frames, cfg["dt"])   # ссылка нужна, иначе GC
+        plt.show()
 
 
 if __name__ == "__main__":
